@@ -29,7 +29,72 @@ Important rules:
 
 export const llmService = {
   /**
-   * Generate reply using canonical memory layout:
+   * Generate reply using canonical memory layout (streaming):
+   * [ SYSTEM PROMPT ]
+   * [ CONVERSATION SUMMARY (if exists) ]
+   * [ LAST 5 RAW MESSAGES ]
+   * [ CURRENT USER MESSAGE ]
+   */
+  async *generateReplyStream(params: {
+    summary: string | null;
+    rawMessages: ChatHistoryMessage[];
+    userMessage: string;
+  }): AsyncGenerator<string, void, unknown> {
+    try {
+      const { summary, rawMessages, userMessage } = params;
+
+      // Build conversation context following canonical memory layout
+      let contextParts: string[] = [];
+
+      // 1. System prompt (always included)
+      contextParts.push(SYSTEM_PROMPT);
+
+      // 2. Conversation summary (if exists)
+      if (summary) {
+        contextParts.push(
+          `\n[Previous conversation summary]\n${summary}\n[End of summary]`
+        );
+      }
+
+      // 3. Last 5 raw messages
+      if (rawMessages.length > 0) {
+        const recentConversation = rawMessages
+          .map((m) =>
+            m.sender === "user" ? `Customer: ${m.text}` : `Agent: ${m.text}`
+          )
+          .join("\n");
+        contextParts.push(`\n[Recent conversation]\n${recentConversation}`);
+      }
+
+      // 4. Current user message
+      contextParts.push(`\nCustomer: ${userMessage}\nAgent:`);
+
+      const prompt = contextParts.join("\n\n");
+
+      // Use streaming API
+      const result = await model.generateContentStream(prompt);
+      
+      let fullText = "";
+      for await (const chunk of result.stream) {
+        const chunkText = chunk.text();
+        if (chunkText) {
+          fullText += chunkText;
+          yield chunkText;
+        }
+      }
+
+      if (!fullText.trim()) {
+        throw new Error("Empty Gemini response");
+      }
+    } catch (error) {
+      // Graceful failure (MANDATORY)
+      console.error("LLM error:", error);
+      yield "Sorry, I'm having trouble responding right now. Please try again in a moment.";
+    }
+  },
+
+  /**
+   * Generate reply using canonical memory layout (non-streaming, for summaries):
    * [ SYSTEM PROMPT ]
    * [ CONVERSATION SUMMARY (if exists) ]
    * [ LAST 5 RAW MESSAGES ]

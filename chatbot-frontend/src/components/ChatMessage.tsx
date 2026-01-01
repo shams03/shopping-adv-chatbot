@@ -64,9 +64,9 @@ export function ChatMessage({ message }: ChatMessageProps) {
             {isUser ? (
               <p className="whitespace-pre-wrap m-0">{message.text}</p>
             ) : (
-              <ReactMarkdown
-                className="markdown-content"
-                components={{
+              <div className="markdown-content">
+                <ReactMarkdown
+                  components={{
                   // Style headings
                   h1: ({ children }) => <h1 className="text-xl font-bold mt-4 mb-2 first:mt-0">{children}</h1>,
                   h2: ({ children }) => <h2 className="text-lg font-bold mt-3 mb-2 first:mt-0">{children}</h2>,
@@ -109,9 +109,10 @@ export function ChatMessage({ message }: ChatMessageProps) {
                   // Style horizontal rules
                   hr: () => <hr className="my-3 border-gray-200 dark:border-gray-700" />,
                 }}
-              >
-                {message.text}
-              </ReactMarkdown>
+                >
+                  {message.text}
+                </ReactMarkdown>
+              </div>
             )}
           </motion.div>
         </motion.div>

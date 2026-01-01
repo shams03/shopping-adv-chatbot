@@ -85,4 +85,86 @@ export const chatService = {
       sessionId: conversation.id,
     };
   },
+
+  /**
+   * Handle incoming message with streaming response
+   * Returns an async generator that yields tokens
+   */
+  async *handleMessageStream({
+    message,
+    sessionId,
+  }: {
+    message: string;
+    sessionId?: string;
+  }): AsyncGenerator<{ token: string; sessionId: string; done: boolean }, void, unknown> {
+    // 1. Get or create conversation
+    const conversation = sessionId
+      ? await conversationRepo.findOrCreate(sessionId)
+      : await conversationRepo.create();
+
+    if (!conversation) {
+      throw new Error("Failed to create or retrieve conversation");
+    }
+
+    // 2. Save user message (immutable, permanent)
+    await messageRepo.create({
+      conversationId: conversation.id,
+      sender: "user",
+      text: message,
+    });
+
+    // 3. Get total message count (including the one we just created)
+    const totalMessageCount = await messageRepo.getCount(conversation.id);
+
+    // 4. Check if summarization is needed (before generating reply)
+    await summaryService.checkAndSummarize(conversation, totalMessageCount);
+
+    // 5. Refresh conversation to get latest summary if it was just created
+    const updatedConversation = await conversationRepo.findById(
+      conversation.id
+    );
+    if (!updatedConversation) {
+      throw new Error("Conversation not found after summarization check");
+    }
+
+    // 6. Get raw message window (last 5 messages)
+    const rawMessages = await messageRepo.getLastN(
+      conversation.id,
+      RAW_WINDOW_SIZE
+    );
+
+    // 7. Stream reply using canonical memory layout
+    let fullReply = "";
+    const stream = llmService.generateReplyStream({
+      summary: updatedConversation.summary,
+      rawMessages: rawMessages.map((m) => ({
+        sender: m.sender,
+        text: m.text,
+      })),
+      userMessage: message,
+    });
+
+    for await (const token of stream) {
+      fullReply += token;
+      yield {
+        token,
+        sessionId: conversation.id,
+        done: false,
+      };
+    }
+
+    // 8. Save complete AI reply (immutable, permanent)
+    await messageRepo.create({
+      conversationId: conversation.id,
+      sender: "ai",
+      text: fullReply.trim(),
+    });
+
+    // Send final done signal
+    yield {
+      token: "",
+      sessionId: conversation.id,
+      done: true,
+    };
+  },
 };

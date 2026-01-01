@@ -8,10 +8,10 @@ const router = express.Router();
 
 /**
  * POST /chat/message
- * Send a message and get AI reply
+ * Send a message and get AI reply (streaming)
  * 
  * Request: { message: string, sessionId?: string }
- * Response: { reply: string, sessionId: string }
+ * Response: Server-Sent Events stream with tokens
  */
 router.post(
   "/chat/message",
@@ -24,12 +24,50 @@ router.post(
         sessionId?: string;
       };
 
-      const result = await chatService.handleMessage({
-        message,
-        sessionId,
+      // Set headers for SSE
+      res.setHeader("Content-Type", "text/event-stream");
+      res.setHeader("Cache-Control", "no-cache");
+      res.setHeader("Connection", "keep-alive");
+      res.setHeader("X-Accel-Buffering", "no"); // Disable nginx buffering
+
+      // Handle client disconnect
+      req.on("close", () => {
+        res.end();
       });
 
-      res.json(result);
+      try {
+        // Stream tokens
+        const stream = chatService.handleMessageStream({
+          message,
+          sessionId,
+        });
+
+        for await (const chunk of stream) {
+          // Send SSE formatted data
+          const data = JSON.stringify(chunk);
+          res.write(`data: ${data}\n\n`);
+
+          // Flush the response to send immediately (if available)
+          if ("flush" in res && typeof (res as any).flush === "function") {
+            (res as any).flush();
+          }
+
+          // If done, break
+          if (chunk.done) {
+            break;
+          }
+        }
+
+        res.end();
+      } catch (streamError) {
+        // Send error as SSE event
+        const errorData = JSON.stringify({
+          error: streamError instanceof Error ? streamError.message : "Stream error",
+          done: true,
+        });
+        res.write(`data: ${errorData}\n\n`);
+        res.end();
+      }
     } catch (error) {
       next(error);
     }

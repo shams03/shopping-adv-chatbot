@@ -180,29 +180,87 @@ function App() {
     setError(null);
     setIsLoading(true);
 
-    try {
-      const response = await api.sendMessage(text, sessionId || undefined);
-      
-      // Update session ID if we got a new one
-      if (response.sessionId) {
-        setSessionId(response.sessionId);
-        storage.setSessionId(response.sessionId);
-      }
+    // Create placeholder AI message for streaming
+    const aiMessage: Message = {
+      sender: "ai",
+      text: "",
+      timestamp: new Date().toISOString(),
+    };
+    setMessages((prev) => [...prev, aiMessage]);
 
-      // Add AI reply
-      const aiMessage: Message = {
-        sender: "ai",
-        text: response.reply,
-        timestamp: new Date().toISOString(),
-      };
-      setMessages((prev) => [...prev, aiMessage]);
+    try {
+      let accumulatedText = "";
+      let currentSessionId = sessionId;
+
+      // Stream tokens
+      const stream = api.sendMessageStream(text, sessionId || undefined);
+
+      for await (const chunk of stream) {
+        // Handle errors from stream
+        if ("error" in chunk && chunk.error) {
+          throw new Error(typeof chunk.error === "string" ? chunk.error : "Stream error");
+        }
+
+        // Update session ID if we got a new one
+        if (chunk.sessionId && chunk.sessionId !== currentSessionId) {
+          currentSessionId = chunk.sessionId;
+          setSessionId(chunk.sessionId);
+          storage.setSessionId(chunk.sessionId);
+        }
+
+        // Accumulate tokens
+        if (chunk.token) {
+          accumulatedText += chunk.token;
+          
+          // Update the AI message with accumulated text
+          setMessages((prev) => {
+            const updated = [...prev];
+            const aiIndex = updated.findIndex(
+              (m, idx) => m.sender === "ai" && idx === updated.length - 1
+            );
+            if (aiIndex !== -1) {
+              updated[aiIndex] = {
+                ...updated[aiIndex],
+                text: accumulatedText,
+              };
+            }
+            return updated;
+          });
+        }
+
+        // If done, finalize the message
+        if (chunk.done) {
+          setMessages((prev) => {
+            const updated = [...prev];
+            const aiIndex = updated.findIndex(
+              (m, idx) => m.sender === "ai" && idx === updated.length - 1
+            );
+            if (aiIndex !== -1) {
+              updated[aiIndex] = {
+                ...updated[aiIndex],
+                text: accumulatedText.trim(),
+                timestamp: new Date().toISOString(),
+              };
+            }
+            return updated;
+          });
+          break;
+        }
+      }
     } catch (err) {
       const errorMessage =
         err instanceof Error ? err.message : "Failed to send message";
       setError(errorMessage);
       
-      // Remove the user message if the request failed
-      setMessages((prev) => prev.filter((m) => m !== userMessage));
+      // Remove both user and incomplete AI messages if the request failed
+      setMessages((prev) => {
+        const filtered = prev.filter((m) => m !== userMessage);
+        // Remove the last AI message if it's empty or incomplete
+        if (filtered.length > 0 && filtered[filtered.length - 1].sender === "ai" && filtered[filtered.length - 1].text === "") {
+          filtered.pop();
+        }
+        return filtered;
+      });
     } finally {
       setIsLoading(false);
     }
